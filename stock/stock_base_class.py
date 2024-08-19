@@ -12,5 +12,3 @@ class stockBase:
     # 拼接交易所代码
     def codeNameStr(self):
         return "{}{}".format(self.codeNumStr,self.exchangeTailStr)
-
-
