@@ -21,6 +21,7 @@ stock.openPrice = w.wsd(stock.stockName, "open", "ED", stock.stockInfoDate, "Pri
 stock.highestPrice = w.wsd(stock.stockName, "high", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
 stock.lowestPrice = w.wsd(stock.stockName, "low", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
 
+print(w.wsd(stock.stockName, "tech_MA5", "2024-08-10", "2024-08-20", "PriceAdj=F", usedf=True)[1])
 w.close()
 
 print(stock.lowestPrice, stock.highestPrice, stock.openPrice, stock.closePrice)
