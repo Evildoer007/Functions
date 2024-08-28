@@ -6,7 +6,7 @@ from WindPy import w
 
 TodayDate = datetime.datetime.today().strftime("%Y-%m-%d")
 
-stockBase = stockBase("000001", ".sz")
+stockBase = stockBase("002085", ".sz")
 #print(stockName.codeNumStr, stockName.exchangeTailStr)
 #print(stockName.codeNameStr())
 
@@ -16,12 +16,18 @@ stock.stockInfoDate = TodayDate
  
 w.start()
 
-stock.closePrice = w.wsd(stock.stockName, "close", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
-stock.openPrice = w.wsd(stock.stockName, "open", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
-stock.highestPrice = w.wsd(stock.stockName, "high", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
-stock.lowestPrice = w.wsd(stock.stockName, "low", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
+#stock.closePrice = w.wsd(stock.stockName, "close", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
+#stock.openPrice = w.wsd(stock.stockName, "open", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
+#stock.highestPrice = w.wsd(stock.stockName, "high", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
+#stock.lowestPrice = w.wsd(stock.stockName, "low", "ED", stock.stockInfoDate, "PriceAdj=F", usedf=True)[1].iloc[0,0]
 
-print(w.wsd(stock.stockName, "tech_MA5", "2024-08-10", "2024-08-20", "PriceAdj=F", usedf=True)[1])
+stockFrame = w.wsd(stock.stockName, 
+            ["tech_MA5", "close", "open", "high", "low"], 
+            "2024-08-10", 
+            "2024-08-27", 
+            "PriceAdj=F", 
+            usedf=True)[1]
+print(type(stockFrame))
 w.close()
 
-print(stock.lowestPrice, stock.highestPrice, stock.openPrice, stock.closePrice)
+#print(stock.lowestPrice, stock.highestPrice, stock.openPrice, stock.closePrice)
