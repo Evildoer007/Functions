@@ -6,7 +6,7 @@ import sys
 import copy
 import scipy.optimize as opt
 import math
-import cuda_kernel_package
+import cuda_kernal_package
 from numba import cuda, float32, int16, int32, float64
 from numba.cuda.random import create_xoroshiro128p_states, xoroshiro128p_normal_float32
 
@@ -203,13 +203,14 @@ class autocall:
         self.forward_base = forward
         self.forward = None if forward is None else [[s+(x[0]-s)*forward_ratio, x[1]] for x in forward]
         self.forward_ratio = forward_ratio
+        self.forward_curve = self.price_forward_curve() 
 
         self.discount = 1 if discount else 0
         self.fcn = 1 if fcn else 0
         self.ki_expire = 1 if ki_expire else 0
 
-    def price(self, k = None, vol = None, s = None, forward_curve = None):
-
+    def price_value(self, k = None, vol = None, s = None, forward_curve = None):
+        # pv计算
         s = self.s if s is None else s
         k = self.k if k is None else k
         vol = self.vol if vol is None else vol
@@ -252,6 +253,9 @@ class autocall:
         forward_curve_array = np.array(self.forward_curve if forward_curve is None else forward_curve).astype(np.float32)
         forward_curve_div = forward_curve_array[1:] / forward_curve_array[:-1]      # forward明日/当日
 
+        # 后端返息金额 = 后端返息率 * 期初价格
+        option_end_cost = self.option_end_cost * self.s0 if option_end_cost else 0
+
         if self.discount:
             pass
         elif self.fcn:
@@ -259,7 +263,8 @@ class autocall:
         elif self.enhance:
             pass
         else:
-            cuda_kernal[blocks, threads_per_block](
+            cuda_kernal_package.cuda_kernal[blocks, threads_per_block]
+            (
                 rng_states,
                 nsim_per_thread,
                 float32(self.s if s is None else s),
@@ -291,12 +296,120 @@ class autocall:
                 np.array(dis_factor).astype(np.float32),
                 float32(self.enhance_k),
                 float32(self.enhance_ratio),
-                float32(self.option_end_cost)
+                float32(self.option_end_cost),
                 self.ki_expire,
                 self.callput,
-                out,
+                out
             )
 
         self.pv = np.mean(out)
         return self.pv
+    
+    def price_coupon(self, coupon, final_rebate=None, last_month=None, last_coupon=None):
+        # 带coupon参数的pv计算
+        if self.mold == 'snowball':
+            self.call_amt = [coupon * x / 365 for x in self.call_nday]      # 按自然日/365计息
+            self.final_rebate = self.call_amt[-1] if final_rebate is None else final_rebate
+                
+            if last_month is not None and last_coupon is not None:
+                l = len(self.call_amt)
+                for i in range(l - last_month, l):
+                    self.call_amt[i] = last_coupon * self.call_nday[i] / 365
+                self.final_rebate = self.call_amt[-1]
+            
+        elif self.mold == 'phoenix':
+            self.cpn_amt = [coupon/12] * self.cpn_num     # 按月份/12计息
+        elif self.mold == 'trigger':
+            self.call_amt = [coupon] * self.call_num     # 绝对票息
+            self.final_rebate = coupon if final_rebate is None else final_rebate
+            
+        return self.price()
+
+    def delta(self, ds=0.01):
+        # 计算整条forward曲线上下平移时的delta
+        # delta计算为前后差分0.5%
+        temp1 = copy.deepcopy(self)
+        temp1.s *= (1 + ds/2)
+        temp2 = copy.deepcopy(self)
+        temp2.s *= (1 - ds/2)
+        self.delta0 = (temp1.price_value() - temp2.price_value()) / (self.s * ds)
+        return self.delta0
+    def gamma(self, price=None, ds=0.01):
+        # gamma结算为前后差分1%
+        if price is None:
+            price = self.priceValue()
+        temp1 = copy.deepcopy(self)
+        temp1.s *= (1 + ds)
+        temp2 = copy.deepcopy(self)
+        temp2.s *= (1 - ds)
+        self.gamma0 = (temp1.price_value() - 2*price + temp2.price_value()) / ((self.s * ds)**2)
+        return self.gamma0
+    def theta(self, price=None):
+        # theta计算为年化交易日差分
+        temp = copy.deepcopy(self)
+        temp.tday += 1
+        temp.nday += Annual_trade_days/365
+        temp.price_forward_curve()
+        self.theta0 = temp.price_value() - (self.price_value() if price is None else price)
+        return self.theta0
+    def vega(self, price=None):
+        # vega计算为向前差分1%
+        temp = copy.deepcopy(self)
+        temp.vol += 0.01
+        self.vega0 = temp.price_value() - (self.price_value() if price is None else price)
+        return self.vega0
+    def rho(self, price=None):
+        # rho计算为向前差分1%
+        temp = copy.deepcopy(self)
+        temp.r += 0.01
+        temp.price_forward_curve()
+        self.rho0 = temp.price_value() - (self.price_value() if price is None else price)
+        return self.rho0
+    def vanna(self, vega=None, ds=0.01):
+        # vanna为向前差分1%
+        if vega is None:
+            vega = self.vega()
+        temp = copy.deepcopy(self)
+        temp.s *= (1 + ds)
+        self.vanna0 = (temp.vega() - vega)
+        return self.vanna0
+    def volgamma(self, price=None, ds=0.01):
+        # volgamma为前后差差分1%
+        if price is None:
+            vega = self.vega()
+        temp1 = copy.deepcopy(self)
+        temp1.s *= (1 + ds)
+        temp2 = copy.deepcopy(self)
+        temp2.s *= (1 - ds)
+        self.volga0 = (temp1.vega() - 2*vega + temp2.vega()) / ((self.forward_curve[0][0] * ds)**2)
+        return self.volga0
+
+    def duration(self):
+        # 计算久期，pv(票息=1%)-pv(票息=0%)
+        self.duration0=self.price_coupon(coupon=1)-self.price_coupon(coupon=0)
+        return self.duration0
+    
+    def plot_forward(self):
+        # 画出远期价格
+        pd.DataFrame(self.forward_curve).plot()
         
+    def price_forward_curve(self, s=None, forward=None):
+        # 对远期价格进行线性差分，由字典转为列表
+        # forward_curve，远期价格曲线，第tday（含）至第final_tday（含）
+        # 共final_tday-tday+1个，且forward_curve[0]=s
+        s = self.s if s is None else s
+        forward = self.forward if forward is None else forward
+        if forward is None:
+            b = self.r - self.q
+            # 默认3年远期价格为年化b
+            forward_curve = np.interp(list(range(self.final_tday - self.tday + 1)), 
+                                      [0, 244, 244*2, 244*3], [s, s*(1+b), s*(1+b)**2, s*(1+b)**3])
+        else:
+            forward_list = [s] + [x[0] for x in forward]        # 远期价格
+            tday_list = [0] + [x[1] for x in forward]           # 时间列表
+            forward_curve = np.interp(list(range(self.final_tday - self.tday + 1)), tday_list, forward_list)   
+            # 如果forward长度比final_tday短，则forward最后至final_tday部分是平水
+        
+        forward_curve = [round(x, 4) for x in forward_curve]
+        return forward_curve
+    
