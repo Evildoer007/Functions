@@ -1,5 +1,17 @@
-Annual_trade_days = 244
+from __future__ import print_function, absolute_import
+import numpy as np
+import pandas as pd
+import time
+import sys
+import copy
+import scipy.optimize as opt
+import math
+import cuda_kernel_package
+from numba import cuda, float32, int16, int32, float64
+from numba.cuda.random import create_xoroshiro128p_states, xoroshiro128p_normal_float32
 
+NSIM = int(1e7)
+Annual_trade_days = 244
 class autocall:
     def __init__(
             self,
@@ -100,9 +112,7 @@ class autocall:
             if ko is None:
                 print('Attention!!! No Knock-Out price!!!')
             call_barrier = [ ko + x * ko_step_down for x in range(tenor_month-call_begin_month+1) ]
-        
-        self.call_num = len(self.call_tday) if call_num is None else call_num
-        self.call_barrier = [ko] * self.call_num if call_barrier is None else call_barrier
+
 
         if target == 'coupon':
             # 处理日期数据
@@ -124,6 +134,9 @@ class autocall:
                                     for x in range(tenor_month-call_begin_month+1) ]
             else:
                 self.call_tday = call_tday
+                    
+            self.call_num = len(self.call_tday) if call_num is None else call_num
+            self.call_barrier = [ko] * self.call_num if call_barrier is None else call_barrier
 
             if call_nday is None:
                 if mold == 'trigger':
@@ -195,5 +208,95 @@ class autocall:
         self.fcn = 1 if fcn else 0
         self.ki_expire = 1 if ki_expire else 0
 
+    def price(self, k = None, vol = None, s = None, forward_curve = None):
 
+        s = self.s if s is None else s
+        k = self.k if k is None else k
+        vol = self.vol if vol is None else vol
+        forward_curve = self.forward_curve if forward_curve is None else forward_curve
+
+        threads_per_block = 64
+        blocks = 512
+        threads = threads_per_block * blocks
+        nsim_per_thread = int32(self.nsim // threads)
+        rng_states = create_xoroshiro128p_states(threads, seed=1) # 随机种子
+        out = np.zeros(threads, dtype=np.float32)
+
+        call_tday = np.array(self.call_tday)
+        cpn_tday = np.array(self.cpn_tday)
+
+        if self.tday >= call_tday[-1]:      # 是否到期日
+            call_idx_init = len(call_tday) - 1
+            cpn_idx_init = len(call_tday) - 1
+        else:
+            # 下个call_tday
+            call_idx_init = np.where(self.tday <= call_tday)[0][0].astype(np.int16)   
+            # 下个cpn_tday
+            cpn_idx_init = np.where(self.tday <= cpn_tday)[0][0].astype(np.int16)
+
+        # 贴现cpn_amt
+        cpn_amt_dis = [self.cpn_amt[i] * np.exp(-self.r * (
+            self.cpn_nday[i] - self.nday)/365) for i in range(self.cpn_num)]
+        # 贴现call_amt(考虑保证金) 
+        call_amt_dis = [(self.call_amt[i]+self.margin) * np.exp(-self.r * (
+            self.call_nday[i] - self.nday)/365) - self.margin for i in range(self.call_num)]  
+        
+        # 敲出贴现因子
+        dis_factor = [np.exp(-self.r * (self.call_nday[i] - self.nday)/365) for i in range(self.call_num)]
+
+        # 期末贴现因子
+        final_dis_factor = np.exp(-self.r * (self.final_nday - self.nday)/365)
+        # 期末贴现赔付(考虑保证金)
+        final_rebate_dis = final_dis_factor * (self.final_rebate + self.margin) - self.margin
+ 
+        forward_curve_array = np.array(self.forward_curve if forward_curve is None else forward_curve).astype(np.float32)
+        forward_curve_div = forward_curve_array[1:] / forward_curve_array[:-1]      # forward明日/当日
+
+        if self.discount:
+            pass
+        elif self.fcn:
+            pass
+        elif self.enhance:
+            pass
+        else:
+            cuda_kernal[blocks, threads_per_block](
+                rng_states,
+                nsim_per_thread,
+                float32(self.s if s is None else s),
+                float32(self.k if k is None else k),
+                float32(self.ki),
+                float32(self.floor),
+                float32(self.vol if vol is None else vol),
+                float32(self.r),
+                int16(self.tday),
+                self.ki_flag,
+
+                int16(self.final_tday),
+                float32(final_rebate_dis),
+                float32(final_dis_factor),
+
+                int16(cpn_idx_init),
+                np.array(cpn_amt_dis).astype(np.float32),
+                np.array(self.cpn_barrier).astype(np.float32),
+                np.array(self.cpn_tday).astype(np.int16),
+
+                int16(call_idx_init),
+                np.array(call_amt_dis).astype(np.float32),
+                np.array(self.call_barrier).astype(np.float32),
+                np.array(self.call_tday).astype(np.int16),
+
+                forward_curve_div,
+
+                float32(self.margin),
+                np.array(dis_factor).astype(np.float32),
+                float32(self.enhance_k),
+                float32(self.enhance_ratio),
+                float32(self.option_end_cost)
+                self.ki_expire,
+                self.callput,
+                out,
+            )
+
+        self.pv = np.mean(out)
+        return self.pv
         
